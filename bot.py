@@ -1373,7 +1373,7 @@ async def cmd_gen_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keys = generate_cardkeys_batch(count, note)
     lines = '\n'.join(f"<code>{k}</code>" for k in keys)
     await update.message.reply_text(
-        f"🔑 <b>已生成 {count} 张卡密</b>\n{f'备注：{note}\n' if note else ''}\n{lines}\n\n💡 固定万能卡密：<code>dj4399662</code>（可无限使用）",
+        f"🔑 <b>已生成 {count} 张卡密</b>\n" + (f'备注：{note}\n' if note else '') + f"\n{lines}\n\n💡 固定万能卡密：<code>dj4399662</code>（可无限使用）",
         parse_mode='HTML'
     )
 
