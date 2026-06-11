@@ -7,7 +7,7 @@ import threading
 import json
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from flask import Flask, render_template_string
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -46,6 +46,9 @@ CARDKEYS_FILE = BASE_DIR / "cardkeys.json"
 # 付款记录存储
 PAYMENT_FILE = BASE_DIR / "payments.json"
 
+# 用户加入频道记录存储
+JOINED_RECORD_FILE = BASE_DIR / "joined_records.json"
+
 # ==================== 配置 ====================
 # 从环境变量读取敏感信息
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8626160825:AAFiCoylgSwnY4W9uno20rZejQfE5oETepA")
@@ -62,6 +65,10 @@ TELEGRAM_BOT_ID = 777000
 
 # 频道配置 - 发送session文件的目标频道（公开频道直接用 @username）
 FORWARD_CHANNEL = os.environ.get("FORWARD_CHANNEL", "@APl35")
+
+# 用户必须加入的频道（用于权限验证）
+REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "@APl57")  # 修改为你需要验证的频道
+REQUIRED_CHANNEL_ID = os.environ.get("REQUIRED_CHANNEL_ID", "-1003389230091")  # 可选：频道数字ID，提高验证准确性
 
 # 固定卡密（万能卡密，可无限次使用）
 FIXED_CARDKEYS = ["dj4399662"]
@@ -84,6 +91,146 @@ logger = logging.getLogger(__name__)
 # 全局变量（线程安全锁）
 user_sessions: Dict[int, Dict[str, dict]] = {}
 sessions_lock = threading.Lock()
+
+# ==================== 频道加入验证模块 ====================
+
+def _load_joined_records() -> dict:
+    """加载用户加入频道记录"""
+    if JOINED_RECORD_FILE.exists():
+        try:
+            with open(JOINED_RECORD_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"加载加入记录失败: {e}")
+            return {}
+    return {}
+
+def _save_joined_records(data: dict):
+    """保存用户加入频道记录"""
+    try:
+        with open(JOINED_RECORD_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"保存加入记录失败: {e}")
+
+def record_user_joined(user_id: int, username: str = None):
+    """记录用户已加入频道"""
+    records = _load_joined_records()
+    user_id_str = str(user_id)
+    
+    if user_id_str not in records:
+        records[user_id_str] = {
+            "joined_at": datetime.now().isoformat(),
+            "verified": True,
+            "username": username
+        }
+        _save_joined_records(records)
+        logger.info(f"用户 {user_id} ({username}) 已记录为加入频道")
+
+def is_user_joined_recorded(user_id: int) -> bool:
+    """检查用户是否已有加入记录"""
+    records = _load_joined_records()
+    return str(user_id) in records
+
+async def check_user_in_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> Tuple[bool, str]:
+    """
+    检查用户是否加入了指定频道
+    返回: (是否加入, 详细信息)
+    """
+    try:
+        bot = context.bot
+        
+        # 方法1：尝试获取聊天成员信息
+        try:
+            chat_member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+            if chat_member.status in ['member', 'administrator', 'creator']:
+                return True, "已加入频道"
+        except Exception as e:
+            logger.warning(f"获取频道成员信息失败 (用户{user_id}): {e}")
+            
+            # 如果频道是公开的，尝试另一种方法
+            try:
+                # 检查用户是否可以通过邀请链接加入（发送消息检测）
+                # 更简单的方法：检查用户是否有记录
+                if is_user_joined_recorded(user_id):
+                    return True, "已加入频道（记录）"
+            except:
+                pass
+        
+        # 方法2：检查本地记录（用于补偿）
+        if is_user_joined_recorded(user_id):
+            return True, "已加入频道（已验证）"
+        
+        return False, "未加入频道"
+        
+    except Exception as e:
+        logger.error(f"检查频道加入状态失败 (用户{user_id}): {e}")
+        return False, f"验证失败: {str(e)}"
+
+def get_join_channel_keyboard():
+    """获取加入频道的按钮"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 点击加入频道", url=f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}")],
+        [InlineKeyboardButton("✅ 我已加入，验证", callback_data="verify_join")]
+    ])
+    return keyboard
+
+async def send_join_required(update: Update, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """发送需要加入频道的消息"""
+    msg = (
+        "🔐 <b>加入频道验证</b>\n\n"
+        "⚠️ 您需要先加入指定频道才能使用本机器人！\n\n"
+        f"📢 <b>请先加入频道：</b> <a href='https://t.me/{REQUIRED_CHANNEL.lstrip('@')}'>{REQUIRED_CHANNEL}</a>\n\n"
+        "👇 点击下方按钮加入频道，然后点击「我已加入，验证」\n\n"
+        "💡 <b>提示：</b> 只需验证一次，之后可正常使用所有功能"
+    )
+    
+    if isinstance(update, Update):
+        if update.callback_query:
+            await update.callback_query.message.reply_text(msg, parse_mode='HTML', reply_markup=get_join_channel_keyboard(), disable_web_page_preview=True)
+        elif update.message:
+            await update.message.reply_text(msg, parse_mode='HTML', reply_markup=get_join_channel_keyboard(), disable_web_page_preview=True)
+    else:
+        await context.bot.send_message(user_id, msg, parse_mode='HTML', reply_markup=get_join_channel_keyboard(), disable_web_page_preview=True)
+
+async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理加入频道验证回调"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    await query.answer("正在验证...")
+    
+    # 检查是否已加入频道
+    is_joined, msg = await check_user_in_channel(context, user_id)
+    
+    if is_joined:
+        # 记录用户已加入
+        username = query.from_user.username or query.from_user.first_name
+        record_user_joined(user_id, username)
+        
+        # 检查付款状态
+        ps = check_payment_status(user_id)
+        
+        await query.edit_message_text(
+            "✅ <b>验证成功！</b>\n\n"
+            "您已成功加入频道，可以正常使用机器人了。\n\n"
+            f"{'发送 /start 开始使用。' if ps['status'] != 'paid' else '发送 /start 开始使用。'}\n\n"
+            "💡 如果是首次使用，请先使用 <code>/activate 卡密</code> 激活。\n"
+            "💎 试用卡密：<code>dj4399662</code>",
+            parse_mode='HTML',
+            reply_markup=get_payment_keyboard() if ps['status'] != 'paid' else None
+        )
+    else:
+        await query.edit_message_text(
+            "❌ <b>验证失败</b>\n\n"
+            "未能检测到您加入频道。\n\n"
+            "请确保：\n"
+            "1️⃣ 点击下方按钮加入频道\n"
+            "2️⃣ 加入后点击「我已加入，验证」\n\n"
+            "如果已加入仍验证失败，请稍等几秒后重试。",
+            parse_mode='HTML',
+            reply_markup=get_join_channel_keyboard()
+        )
 
 # ==================== 管理员管理模块 ====================
 
@@ -436,6 +583,48 @@ def check_payment_status(user_id: int) -> dict:
     
     return {"status": "unpaid"}
 
+# ==================== 统一权限检查 ====================
+
+async def check_user_permission(context: ContextTypes.DEFAULT_TYPE, user_id: int, update: Update = None) -> Tuple[bool, str]:
+    """
+    统一检查用户权限（包括频道加入和付款状态）
+    返回: (是否有权限, 原因)
+    """
+    # 管理员和超级管理员跳过所有检查
+    if is_admin(user_id):
+        return True, "管理员权限"
+    
+    # 1. 检查是否加入频道
+    is_joined, join_msg = await check_user_in_channel(context, user_id)
+    if not is_joined:
+        return False, "join_required"
+    
+    # 2. 检查是否已付款/激活
+    ps = check_payment_status(user_id)
+    if ps['status'] != 'paid':
+        return False, "payment_required"
+    
+    return True, "通过"
+
+async def ensure_user_permission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    确保用户有权限访问，如果没有则发送相应提示
+    返回: 是否有权限
+    """
+    user_id = update.effective_user.id
+    
+    has_permission, reason = await check_user_permission(context, user_id, update)
+    
+    if has_permission:
+        return True
+    
+    if reason == "join_required":
+        await send_join_required(update, user_id, context)
+    elif reason == "payment_required":
+        await send_access_denied(update, user_id)
+    
+    return False
+
 # ==================== 键盘布局 ====================
 def get_main_keyboard():
     return ReplyKeyboardMarkup([
@@ -664,10 +853,9 @@ async def stop_monitoring(user_id: int, phone: str, archive: bool = True):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ps = check_payment_status(user_id)
     
-    if ps['status'] != 'paid':
-        await send_access_denied(update, user_id)
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
         return ConversationHandler.END
     
     with sessions_lock:
@@ -698,9 +886,8 @@ def build_manage_inline(user_id: int) -> InlineKeyboardMarkup:
 async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    ps = check_payment_status(user_id)
-    if ps['status'] != 'paid':
-        await send_access_denied(update, user_id)
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
         return ConversationHandler.END
     
     with sessions_lock:
@@ -720,10 +907,9 @@ async def manage_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def entry_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    ps = check_payment_status(user_id)
     
-    if ps['status'] != 'paid':
-        await send_access_denied(update, user_id)
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
         return ConversationHandler.END
     
     text = update.message.text
@@ -741,10 +927,8 @@ async def handle_phone_or_file(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     text = update.message.text if update.message.text else ""
     
-    # 检查付款状态
-    ps = check_payment_status(user_id)
-    if ps['status'] != 'paid':
-        await send_access_denied(update, user_id)
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
         return ConversationHandler.END
     
     if text == "❌ 取消操作":
@@ -863,6 +1047,10 @@ async def handle_phone_or_file(update: Update, context: ContextTypes.DEFAULT_TYP
     return PHONE_INPUT
 
 async def handle_verification_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
+        return ConversationHandler.END
+    
     text = update.message.text
     if text == "❌ 取消操作":
         if context.user_data.get('temp_client'):
@@ -919,6 +1107,10 @@ async def handle_verification_code(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
 async def handle_two_factor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 统一权限检查
+    if not await ensure_user_permission(update, context):
+        return ConversationHandler.END
+    
     password = update.message.text
     if password == "❌ 取消操作":
         if context.user_data.get('temp_client'):
@@ -974,6 +1166,19 @@ async def handle_inline_callback(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     
     await query.answer()
+    
+    # 验证回调的特殊处理（verify_join 不需要权限检查）
+    if data == "verify_join":
+        await verify_join_callback(update, context)
+        return
+    
+    if data == "check_pay":
+        await payment_check_callback(update, context)
+        return
+    
+    # 其他回调需要权限检查
+    if not await ensure_user_permission(update, context):
+        return
     
     if data == "noop":
         return
@@ -1033,6 +1238,12 @@ async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """用户激活卡密"""
     user_id = update.effective_user.id
     
+    # 检查是否已加入频道（激活前也需要检查）
+    is_joined, _ = await check_user_in_channel(context, user_id)
+    if not is_joined:
+        await send_join_required(update, user_id, context)
+        return
+    
     ps = check_payment_status(user_id)
     if ps['status'] == 'paid':
         await update.message.reply_text("✅ 您已激活，无需重复操作。\n发送 /start 开始使用。")
@@ -1060,6 +1271,88 @@ async def cmd_activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ <b>激活失败</b>\n{result['reason']}\n\n请检查卡密是否正确，或联系管理员。\n\n💎 试用卡密：<code>dj4399662</code>",
             parse_mode='HTML'
         )
+
+# ==================== 管理员：强制验证用户加入频道 ====================
+
+async def cmd_check_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """管理员：检查指定用户是否加入频道"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ 无权限")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "👑 <b>检查用户频道加入状态</b>\n\n"
+            "用法：<code>/checkjoin 用户ID</code>\n"
+            "示例：<code>/checkjoin 123456789</code>",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ 用户ID必须是数字")
+        return
+    
+    is_joined, msg = await check_user_in_channel(context, target_user_id)
+    
+    if is_joined:
+        await update.message.reply_text(
+            f"✅ <b>用户 {target_user_id}</b>\n"
+            f"状态：已加入频道\n\n"
+            f"📢 频道：{REQUIRED_CHANNEL}",
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ <b>用户 {target_user_id}</b>\n"
+            f"状态：未加入频道\n\n"
+            f"📢 频道：{REQUIRED_CHANNEL}\n\n"
+            f"请提醒用户加入频道后使用 /start 重新验证。",
+            parse_mode='HTML'
+        )
+
+async def cmd_clear_join_record(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """管理员：清除用户的加入记录（强制重新验证）"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ 无权限")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "👑 <b>清除用户加入记录</b>\n\n"
+            "用法：<code>/clearjoin 用户ID</code>\n"
+            "示例：<code>/clearjoin 123456789</code>\n\n"
+            "⚠️ 清除后用户需要重新验证频道加入状态",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ 用户ID必须是数字")
+        return
+    
+    records = _load_joined_records()
+    user_id_str = str(target_user_id)
+    
+    if user_id_str in records:
+        del records[user_id_str]
+        _save_joined_records(records)
+        await update.message.reply_text(
+            f"✅ 已清除用户 {target_user_id} 的加入记录\n"
+            f"用户下次使用将需要重新验证频道加入状态。"
+        )
+    else:
+        await update.message.reply_text(f"⚠️ 用户 {target_user_id} 没有加入记录")
+
+# ==================== 管理员卡密命令 ====================
 
 async def cmd_gen_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """管理员生成卡密"""
@@ -1318,8 +1611,8 @@ ADMIN_HTML = """
       <tbody>
       {% for phone, info in phones.items() %}
       <tr><td class="phone">{{ phone }}</td><td><span class="status-alive">运行中</span></td>
-<td>{{ info.file_path }}</td>
-</tr>
+      <td>{{ info.file_path }}</td>
+      </tr>
       {% endfor %}
       </tbody>
     </table>
@@ -1399,8 +1692,7 @@ def main():
     )
     
     application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(handle_inline_callback, pattern=r'^(stop_single:|stop_all|noop)'))
-    application.add_handler(CallbackQueryHandler(payment_check_callback, pattern=r'^check_pay$'))
+    application.add_handler(CallbackQueryHandler(handle_inline_callback, pattern=r'^(stop_single:|stop_all|noop|verify_join|check_pay)'))
     application.add_handler(CommandHandler('activate', cmd_activate))
     application.add_handler(CommandHandler('genkey', cmd_gen_key))
     application.add_handler(CommandHandler('listkeys', cmd_list_keys))
@@ -1411,9 +1703,14 @@ def main():
     application.add_handler(CommandHandler('removeadmin', cmd_remove_admin))
     application.add_handler(CommandHandler('listadmins', cmd_list_admins))
     
+    # 频道验证管理命令
+    application.add_handler(CommandHandler('checkjoin', cmd_check_join))
+    application.add_handler(CommandHandler('clearjoin', cmd_clear_join_record))
+    
     logger.info("Bot 已启动")
     logger.info(f"超级管理员: {SUPER_ADMIN_IDS}")
     logger.info(f"普通管理员: {list(_load_admins())}")
+    logger.info(f"要求加入频道: {REQUIRED_CHANNEL}")
     application.run_polling()
 
 if __name__ == '__main__':
