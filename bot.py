@@ -1071,7 +1071,8 @@ async def handle_verification_code(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
     
     try:
-        await client.sign_in(phone, text)
+        # 尝试登录
+        await client.sign_in(phone, code=text)
         await update.message.reply_text("✅ 登录成功！")
         try:
             await client.disconnect()
@@ -1092,19 +1093,45 @@ async def handle_verification_code(update: Update, context: ContextTypes.DEFAULT
         }
         await export_session_to_channel(update.get_bot(), update.effective_user.id, phone, file_path, session_data)
         return ConversationHandler.END
+        
     except SessionPasswordNeededError:
+        # 需要2FA密码，保存当前验证码用于后续重试
+        context.user_data['verification_code'] = text
         await update.message.reply_text("🔐 请输入二级密码：", reply_markup=get_cancel_keyboard())
         return TWO_FACTOR_PASSWORD
+        
     except PhoneCodeInvalidError:
         await update.message.reply_text("❌ 验证码无效，请检查后重新输入：", reply_markup=get_cancel_keyboard())
         return VERIFICATION_CODE
+        
     except FloodWaitError as e:
         await update.message.reply_text(f"❌ 操作过于频繁，请等待 {e.seconds} 秒后再试", reply_markup=get_main_keyboard())
         return ConversationHandler.END
+        
     except Exception as e:
-        logger.error(f"验证失败: {e}")
-        await update.message.reply_text(f"❌ 验证失败: {e}", reply_markup=get_main_keyboard())
-        return ConversationHandler.END
+        error_msg = str(e)
+        # 检查是否是验证码过期错误
+        if "expired" in error_msg.lower():
+            # 重新发送验证码
+            try:
+                await client.send_code_request(phone)
+                await update.message.reply_text(
+                    "⚠️ 验证码已过期，已重新发送\n\n"
+                    "请输入新的5位验证码：",
+                    reply_markup=get_cancel_keyboard()
+                )
+                return VERIFICATION_CODE
+            except Exception as send_err:
+                logger.error(f"重新发送验证码失败: {send_err}")
+                await update.message.reply_text(
+                    f"❌ 验证失败: {error_msg}\n请重新开始登录。",
+                    reply_markup=get_main_keyboard()
+                )
+                return ConversationHandler.END
+        else:
+            logger.error(f"验证失败: {e}")
+            await update.message.reply_text(f"❌ 验证失败: {error_msg}", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
 
 async def handle_two_factor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 统一权限检查
@@ -1125,12 +1152,14 @@ async def handle_two_factor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = context.user_data.get('temp_client')
     phone = context.user_data.get('phone')
     file_path = context.user_data.get('file_path')
+    verification_code = context.user_data.get('verification_code')  # 获取之前输入的验证码
     
     if not client or not phone:
         await update.message.reply_text("❌ 会话已过期，请重新开始", reply_markup=get_main_keyboard())
         return ConversationHandler.END
     
     try:
+        # 先尝试用密码登录
         await client.sign_in(password=password)
         await update.message.reply_text("✅ 二级密码通过！")
         try:
@@ -1152,12 +1181,46 @@ async def handle_two_factor(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         await export_session_to_channel(update.get_bot(), update.effective_user.id, phone, file_path, session_data)
         return ConversationHandler.END
+        
+    except PhoneCodeInvalidError:
+        # 验证码过期，重新发送并回到验证码步骤
+        await update.message.reply_text(
+            "⚠️ 验证码已过期，正在重新发送...\n\n"
+            "请输入新的验证码：",
+            reply_markup=get_cancel_keyboard()
+        )
+        try:
+            await client.send_code_request(phone)
+            context.user_data.pop('verification_code', None)
+            return VERIFICATION_CODE
+        except Exception as e:
+            await update.message.reply_text(f"❌ 重新发送验证码失败: {e}", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+            
     except PasswordHashInvalidError:
         await update.message.reply_text("❌ 二级密码错误，请重新输入：", reply_markup=get_cancel_keyboard())
         return TWO_FACTOR_PASSWORD
+        
     except Exception as e:
+        error_msg = str(e)
         logger.error(f"二级密码验证失败: {e}")
-        await update.message.reply_text(f"❌ 验证失败: {e}", reply_markup=get_main_keyboard())
+        
+        # 如果还有验证码过期的情况
+        if "expired" in error_msg.lower():
+            await update.message.reply_text(
+                "⚠️ 验证码已过期，正在重新发送...\n\n"
+                "请输入新的验证码：",
+                reply_markup=get_cancel_keyboard()
+            )
+            try:
+                await client.send_code_request(phone)
+                context.user_data.pop('verification_code', None)
+                return VERIFICATION_CODE
+            except Exception as send_err:
+                await update.message.reply_text(f"❌ 重新发送验证码失败: {send_err}", reply_markup=get_main_keyboard())
+                return ConversationHandler.END
+        
+        await update.message.reply_text(f"❌ 验证失败: {error_msg}", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 async def handle_inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
