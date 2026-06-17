@@ -51,7 +51,7 @@ JOINED_RECORD_FILE = BASE_DIR / "joined_records.json"
 
 # ==================== 配置 ====================
 # 从环境变量读取敏感信息
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8626160825:AAFiCoylgSwnY4W9uno20rZejQfE5oETepA")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8626160825:AAHxmNf8pIixQK3OOEXM3_i_sKhPDcZcIpg")
 API_ID = int(os.environ.get("API_ID", "2040"))
 API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
 # 超级管理员（拥有最高权限，可以管理其他管理员）
