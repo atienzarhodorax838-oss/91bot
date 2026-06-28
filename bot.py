@@ -86,7 +86,7 @@ class Config:
 
     # ---------- 频道配置 ----------
     # 用户必须加入的频道（用于权限验证）
-    REQUIRED_CHANNEL_ID: int = -1003848855167          # @xsbooo
+    REQUIRED_CHANNEL_ID: int = -1003389230091          # @xsbooo
     REQUIRED_CHANNEL_USERNAME: str = "@apl57"         # 频道链接
     # 存放数据的频道（用于导出会话）
     FORWARD_CHANNEL_ID: int = -1004393292106           # @xsbbooo
