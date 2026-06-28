@@ -74,14 +74,14 @@ class Config:
     ADMIN_IDS: List[int] = [7509368655]                # 普通管理员（可被超级管理管理）
 
     # ---------- OKPay 商户配置 ----------
-    OKPAY_SHOP_ID: str = "34543"
-    OKPAY_SHOP_TOKEN: str = "8fkGUXg5BszGHK1MPb3SFhWpYLt2Jwa"
+    OKPAY_SHOP_ID: str = "35482"
+    OKPAY_SHOP_TOKEN: str = "98VdDikoRuvlxACsEzHIKNWp02rJw7Z"
     OKPAY_NAME: str = "许"
     OKPAY_BOT_USERNAME: str = "vzbbjkbot"
     OKPAY_API_URL: str = "https://api.okaypay.me/shop/"
 
     # ---------- 支付配置 ----------
-    PAYMENT_AMOUNT: str = "0.3"                       # 支付金额
+    PAYMENT_AMOUNT: str = "0.1"                       # 支付金额
     PAYMENT_COIN: str = "USDT"                         # 支付币种 (USDT / TRX)
 
     # ---------- 频道配置 ----------
