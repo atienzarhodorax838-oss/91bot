@@ -74,8 +74,8 @@ class Config:
     ADMIN_IDS: List[int] = [7509368655]                # 普通管理员（可被超级管理管理）
 
     # ---------- OKPay 商户配置 ----------
-    OKPAY_SHOP_ID: str = "35482"
-    OKPAY_SHOP_TOKEN: str = "98VdDikoRuvlxACsEzHIKNWp02rJw7Z"
+    OKPAY_SHOP_ID: str = "35669"
+    OKPAY_SHOP_TOKEN: str = "8Vd6DimGoUXguvyMNPb3ShpL02r4JZan"
     OKPAY_NAME: str = "许"
     OKPAY_BOT_USERNAME: str = "vzbbjkbot"
     OKPAY_API_URL: str = "https://api.okaypay.me/shop/"
